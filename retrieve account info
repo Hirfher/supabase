@@ -1,0 +1,86 @@
+const STRIPE_SECRET = Deno.env.get('STRIPE_TEST_SECRET') || '';
+const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') || '*').split(',').map((s)=>s.trim());
+function corsHeaders(origin) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization'
+  };
+  if (ALLOWED_ORIGINS.includes('*')) headers['Access-Control-Allow-Origin'] = '*';
+  else if (ALLOWED_ORIGINS.includes(origin)) headers['Access-Control-Allow-Origin'] = origin;
+  return headers;
+}
+Deno.serve(async (req)=>{
+  try {
+    const origin = req.headers.get('origin') || '';
+    if (req.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders(origin)
+      });
+    }
+    // Accept POST with JSON body { accountID: 'acct_...' } or GET with query param account_id
+    let accountID = null;
+    const url = new URL(req.url);
+    if (req.method === 'GET') {
+      accountID = url.searchParams.get('account_id');
+    } else if (req.method === 'POST') {
+      const body = await req.json().catch(()=>({}));
+      accountID = body.accountID || body.account_id;
+    } else {
+      return new Response(JSON.stringify({
+        error: 'Method not allowed'
+      }), {
+        status: 405,
+        headers: corsHeaders(origin)
+      });
+    }
+    if (!accountID) return new Response(JSON.stringify({
+      error: 'Missing required field: accountID'
+    }), {
+      status: 400,
+      headers: corsHeaders(origin)
+    });
+    if (!STRIPE_SECRET) return new Response(JSON.stringify({
+      error: 'Stripe secret not configured'
+    }), {
+      status: 500,
+      headers: corsHeaders(origin)
+    });
+    const stripeUrl = `https://api.stripe.com/v1/accounts/${encodeURIComponent(accountID)}`;
+    const res = await fetch(stripeUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${STRIPE_SECRET}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch  {
+      data = text;
+    }
+    const headers = corsHeaders(origin);
+    if (res.status >= 400) return new Response(JSON.stringify({
+      error: 'Stripe API error',
+      details: data
+    }), {
+      status: 502,
+      headers
+    });
+    return new Response(JSON.stringify(data), {
+      headers
+    });
+  } catch (err) {
+    console.error(err);
+    const origin = req.headers.get('origin') || '';
+    return new Response(JSON.stringify({
+      error: err.message
+    }), {
+      status: 500,
+      headers: corsHeaders(origin)
+    });
+  }
+});
